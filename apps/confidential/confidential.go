@@ -324,7 +324,8 @@ func (cca Client) AuthCodeURL(ctx context.Context, clientID, redirectURI string,
 // These are set by using various AcquireTokenSilentOption functions.
 type AcquireTokenSilentOptions struct {
 	// Account represents the account to use. To set, use the WithSilentAccount() option.
-	Account Account
+	Account  Account
+	TenantID string
 }
 
 // AcquireTokenSilentOption changes options inside AcquireTokenSilentOptions used in .AcquireTokenSilent().
@@ -362,10 +363,15 @@ func (cca Client) AcquireTokenSilent(ctx context.Context, scopes []string, optio
 // AcquireTokenByAuthCodeOptions contains the optional parameters used to acquire an access token using the authorization code flow.
 type AcquireTokenByAuthCodeOptions struct {
 	Challenge string
+	TenantID  string
 }
 
 // AcquireTokenByAuthCodeOption changes options inside AcquireTokenByAuthCodeOptions used in .AcquireTokenByAuthCode().
 type AcquireTokenByAuthCodeOption func(a *AcquireTokenByAuthCodeOptions)
+
+func (AcquireTokenByAuthCodeOption) authCodeOptionMarker() {}
+
+var _ AuthCodeOption = (*AcquireTokenByAuthCodeOption)(nil)
 
 // WithChallenge allows you to provide a challenge for the .AcquireTokenByAuthCode() call.
 func WithChallenge(challenge string) AcquireTokenByAuthCodeOption {
@@ -376,10 +382,24 @@ func WithChallenge(challenge string) AcquireTokenByAuthCodeOption {
 
 // AcquireTokenByAuthCode is a request to acquire a security token from the authority, using an authorization code.
 // The specified redirect URI must be the same URI that was used when the authorization code was requested.
-func (cca Client) AcquireTokenByAuthCode(ctx context.Context, code string, redirectURI string, scopes []string, options ...AcquireTokenByAuthCodeOption) (AuthResult, error) {
+//
+// Changing the variadic parameter type to the new interface doesn't break user code because the former type
+// now implements that interface. I suppose this could restrict users' ability to fake options, but why would
+// they want to do that instead of writing their own AcquireTokenByAuthCodeOption?
+func (cca Client) AcquireTokenByAuthCode(ctx context.Context, code string, redirectURI string, scopes []string, options ...AuthCodeOption) (AuthResult, error) {
 	opts := AcquireTokenByAuthCodeOptions{}
 	for _, o := range options {
-		o(&opts)
+		switch t := o.(type) {
+		case AcquireTokenByAuthCodeOption:
+			t(&opts)
+		case CallOption:
+			if err := t.Do(options); err != nil {
+				return base.AuthResult{}, err
+			}
+		default:
+			// can't land here in practice
+			return base.AuthResult{}, errors.New("unexpected option type")
+		}
 	}
 
 	params := base.AcquireTokenAuthCodeParameters{
@@ -427,4 +447,68 @@ func (cca Client) Account(homeAccountID string) Account {
 func (cca Client) RemoveAccount(account Account) error {
 	cca.base.RemoveAccount(account)
 	return nil
+}
+
+// CallOption is a type that is implementing an optional argument to a method call.
+// Doesn't need to be exported, I only made it so to look at the doc experience.
+type CallOption interface {
+	Do(a interface{}) error
+	callOptionMarker()
+}
+
+// newCallOption returns a new callOption whose Do() method calls function "f".
+func newCallOption(f func(a any) error) CallOption {
+	if f == nil {
+		panic("cannot pass a nil function")
+	}
+	return callOptionAdapter(f)
+}
+
+// callOptionAdapter is an adapter for a function to a CallOption.
+type callOptionAdapter func(a any) error
+
+func (c callOptionAdapter) Do(a any) error {
+	return c(a)
+}
+
+func (c callOptionAdapter) callOptionMarker() {}
+
+// AuthCodeOption is an option for AcquireTokenByAuthCode.
+// Doesn't need to be exported, I only made it so to look at the doc experience.
+type AuthCodeOption interface {
+	authCodeOptionMarker()
+}
+
+// SilentOption is an option for AcquireTokenSilent.
+// Doesn't need to be exported, I only made it so to look at the doc experience.
+type SilentOption interface {
+	silentOptionMarker()
+}
+
+// WithTenantID specifies a tenant ID for this token request. It may be different
+// than the tenant set in confidential.New()
+func WithTenantID(tenantID string) interface {
+	AuthCodeOption
+	CallOption
+	SilentOption
+} {
+	return struct {
+		AuthCodeOption
+		CallOption
+		SilentOption
+	}{
+		CallOption: newCallOption(
+			func(a any) error {
+				switch t := a.(type) {
+				case *AcquireTokenByAuthCodeOptions:
+					t.TenantID = tenantID
+				case *AcquireTokenSilentOptions:
+					t.TenantID = tenantID
+				default:
+					return errors.New("invalid option")
+				}
+				return nil
+			},
+		),
+	}
 }

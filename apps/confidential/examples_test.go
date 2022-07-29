@@ -1,13 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-package confidential
+// rename this package to get the user code experience here
+package confidential_test
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"log"
+
+	"github.com/AzureAD/microsoft-authentication-library-for-go/apps/confidential"
 )
+
+// users can do stuff like this today, dunno why they would want to
+func MyCustomOption() confidential.AcquireTokenByAuthCodeOption {
+	return func(a *confidential.AcquireTokenByAuthCodeOptions) {
+		a.Challenge = "challenge"
+		a.TenantID = "tenant"
+	}
+}
 
 func ExampleNewCredFromCert_pem() {
 	b, err := ioutil.ReadFile("key.pem")
@@ -18,7 +30,7 @@ func ExampleNewCredFromCert_pem() {
 	// This extracts our public certificates and private key from the PEM file.
 	// The private key must be in PKCS8 format. If it is encrypted, the second argument
 	// must be password to decode.
-	certs, priv, err := CertFromPEM(b, "")
+	certs, priv, err := confidential.CertFromPEM(b, "")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -29,6 +41,17 @@ func ExampleNewCredFromCert_pem() {
 		log.Fatal("too many certificates in PEM file")
 	}
 
-	cred := NewCredFromCert(certs[0], priv)
+	cred := confidential.NewCredFromCert(certs[0], priv)
 	fmt.Println(cred) // Simply here so cred is used, otherwise won't compile.
+
+	client, err := confidential.New("clientId", cred)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ctx := context.Background()
+	client.AcquireTokenByAuthCode(ctx, "", "", []string{},
+		confidential.WithChallenge("challenge"),
+		confidential.WithTenantID("tenant"),
+		MyCustomOption(),
+	)
 }
